@@ -1,0 +1,35 @@
+[project]
+name = "dispatcher"
+version = "0.1.0"
+description = "Worker that drains scheduled outreach actions through an unreliable provider"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# Supplied by the take-home kit; left untouched.
+extend-exclude = ["provider", "verify.py"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "SIM", # simplify
+]
+
+[tool.ruff.format]
+quote-style = "double"
