@@ -1,19 +1,16 @@
 import asyncio
-import logging
 
-from worker.provider import ProviderClient, provider_url
+from worker.provider import ProviderClient
 from worker.worker_db import WorkerDB
 
 IDLE_SLEEP_SECONDS = 5
 
-log = logging.getLogger(__name__)
-
 
 async def run() -> None:
-    provider = ProviderClient(provider_url())
     worker_db = WorkerDB()
-    await provider.open()
+    provider = ProviderClient(worker_db)
     await worker_db.open()
+    await provider.open()
     try:
         while True:
             action = await worker_db.pick_one()
@@ -22,7 +19,7 @@ async def run() -> None:
                 continue
             outcome = await provider.send(action)
             # TODO: decide what to do with the outcome (worker_db.update, Retry-After, /sent).
-            log.info("action %s attempt %d -> %s", action.id, action.attempt_n, outcome)
+            print(f"action {action.id} attempt {action.attempt_n} -> {outcome}")
     finally:
         await provider.close()
         await worker_db.close()

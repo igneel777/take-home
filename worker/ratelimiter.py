@@ -17,10 +17,11 @@ class RateLimiter:
         await self.db.close()
 
     async def get_token(self) -> int:
-        """Take one token from the shared bucket in provider_stats.
+        """Take one token from the shared bucket in provider_stats, in its own transaction.
 
         Returns 0 when a token was taken and the request can go now, or the whole seconds to
         wait before trying again when a Retry-After window is open or the bucket is empty.
+        Never call it while holding the provider_stats row lock: it would wait on that lock.
         """
         async with self.db.transaction() as conn:
             stats, now = await self.db.lock_stats(conn)
