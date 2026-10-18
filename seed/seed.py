@@ -1,5 +1,6 @@
 import asyncio
 import json
+from itertools import batched
 from pathlib import Path
 
 from psycopg import AsyncConnection, sql
@@ -11,6 +12,7 @@ ACTIONS_JSON = Path(__file__).resolve().parent / "actions.json"
 WORKER_ROLE = "worker"
 WORKER_PASSWORD = "dispatch"
 WORKER_TIMEOUT = "5s"
+INSERT_BATCH_SIZE = 100
 
 NOW_MS = "(extract(epoch FROM clock_timestamp()) * 1000)::bigint"
 
@@ -40,7 +42,7 @@ CREATE TABLE actions (
 
 CREATE TABLE receipts (
     receipt_id text PRIMARY KEY,
-    action_id  uuid NOT NULL,
+    action_id  uuid NOT NULL REFERENCES actions (id),
     recipient  text NOT NULL,
     sent_at    bigint NOT NULL
 );
@@ -104,10 +106,11 @@ async def main() -> None:
             await conn.execute(CREATE_TABLES)
             await conn.execute(CREATE_INDEXES)
             async with conn.cursor() as cur:
-                await cur.executemany(
-                    "INSERT INTO actions (id, recipient, body) VALUES (%s, %s, %s)",
-                    [(a["id"], a["recipient"], a["body"]) for a in actions],
-                )
+                for batch in batched(actions, INSERT_BATCH_SIZE):
+                    await cur.executemany(
+                        "INSERT INTO actions (id, recipient, body) VALUES (%s, %s, %s)",
+                        [(a["id"], a["recipient"], a["body"]) for a in batch],
+                    )
             await conn.execute("INSERT INTO provider_stats DEFAULT VALUES")
             await create_worker_role(conn)
     finally:
