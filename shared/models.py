@@ -34,14 +34,7 @@ class Receipt(BaseModel):
 
 
 class ProviderStats(BaseModel):
-    id: int = 1
     sent_cursor: int = 0
-    blocked_until: int = 0
     tokens: float = 0.0
-    refilled_at: int = 0
-    requests_total: int = 0
-    responses_ok: int = 0
-    responses_429: int = 0
-    responses_500: int = 0
-    timeouts: int = 0
-    resets: int = 0
+    last_added_at: int = 0
+    blocked_until: int = 0

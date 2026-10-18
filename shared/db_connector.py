@@ -9,6 +9,10 @@ from psycopg_pool import AsyncConnectionPool
 
 DEFAULT_DATABASE_URL = "postgresql://dispatch:dispatch@127.0.0.1:5432/dispatch"
 
+# SQL expression for the current time in epoch milliseconds; clock_timestamp() so it is not
+# frozen at the start of the transaction.
+NOW_MS = "(extract(epoch FROM clock_timestamp()) * 1000)::bigint"
+
 
 def database_url(role: str = "worker") -> str:
     """DATABASE_URL with its user swapped for `role`.

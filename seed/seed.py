@@ -5,7 +5,8 @@ from pathlib import Path
 
 from psycopg import AsyncConnection, sql
 
-from shared.db_connector import DBConnector
+from config import RATE_LIMIT_TOKENS
+from shared.db_connector import NOW_MS, DBConnector
 
 ACTIONS_JSON = Path(__file__).resolve().parent / "actions.json"
 
@@ -13,8 +14,6 @@ WORKER_ROLE = "worker"
 WORKER_PASSWORD = "dispatch"
 WORKER_TIMEOUT = "5s"
 INSERT_BATCH_SIZE = 100
-
-NOW_MS = "(extract(epoch FROM clock_timestamp()) * 1000)::bigint"
 
 DROP_TABLES = """
 DROP TABLE IF EXISTS actions, receipts, provider_stats;
@@ -48,22 +47,16 @@ CREATE TABLE receipts (
 );
 
 CREATE TABLE provider_stats (
-    id             integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    sent_cursor    bigint NOT NULL DEFAULT 0,
-    blocked_until  bigint NOT NULL DEFAULT 0,
-    tokens         double precision NOT NULL DEFAULT 0,
-    refilled_at    bigint NOT NULL DEFAULT 0,
-    requests_total bigint NOT NULL DEFAULT 0,
-    responses_ok   bigint NOT NULL DEFAULT 0,
-    responses_429  bigint NOT NULL DEFAULT 0,
-    responses_500  bigint NOT NULL DEFAULT 0,
-    timeouts       bigint NOT NULL DEFAULT 0,
-    resets         bigint NOT NULL DEFAULT 0
+    sent_cursor   bigint NOT NULL DEFAULT 0,
+    tokens        double precision NOT NULL DEFAULT {RATE_LIMIT_TOKENS},
+    last_added_at bigint NOT NULL DEFAULT {NOW_MS},
+    blocked_until bigint NOT NULL DEFAULT 0
 );
 """
 
-# provider_stats is a single row, so its primary key is the only index it needs.
 CREATE_INDEXES = """
+-- A unique index on a constant caps provider_stats at a single row.
+CREATE UNIQUE INDEX provider_stats_single_row_idx ON provider_stats ((true));
 CREATE INDEX actions_claimable_idx ON actions (status, attempt_started_at)
     WHERE status IN ('PENDING', 'SENDING');
 CREATE INDEX receipts_action_id_idx ON receipts (action_id);
