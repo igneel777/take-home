@@ -39,12 +39,12 @@ class ProviderClient:
     async def send(self, action: Action) -> Outcome:
         """Send `action` unless an earlier attempt already reached the provider.
 
-        On a first attempt nothing can have gone out, so it is sent straight away. Otherwise
-        /sent is synced to the end first, and an existing receipt is returned as Sent. Being
-        rate limited, by our bucket or by a 429 on /send or /sent, returns NotSent with the
-        seconds to wait.
+        attempt_n counts failed attempts, so at 0 nothing can have gone out and it is sent
+        straight away. Otherwise /sent is synced to the end first, and an existing receipt is
+        returned as Sent. Being rate limited, by our bucket or by a 429 on /send or /sent,
+        returns NotSent with the seconds to wait.
         """
-        if action.attempt_n > 1:
+        if action.attempt_n > 0:
             while not (result := await self.sync_one_page()).done:
                 if result.wait > 0:
                     return NotSent(reason="rate limited syncing /sent", retry_after=result.wait)

@@ -13,7 +13,7 @@ MAX_ATTEMPTS = 5
 # SKIP LOCKED lets concurrent workers pass over a row another worker is claiming.
 PICK_ONE = f"""
 UPDATE actions
-SET status = 'SENDING', attempt_n = attempt_n + 1, attempt_started_at = {NOW_MS}
+SET status = 'SENDING', attempt_started_at = {NOW_MS}
 WHERE id = (
     SELECT id FROM actions
     WHERE status = 'PENDING'
@@ -24,17 +24,54 @@ WHERE id = (
 RETURNING *
 """
 
-# Every update is guarded by attempt_n, so it applies only to the attempt this worker picked.
+# Every update is guarded by attempt_started_at, which pick_one sets, so it applies only to
+# the pick this worker made.
+CLAIMED = """
+WHERE id = %(id)s AND status = 'SENDING' AND attempt_started_at = %(attempt_started_at)s
+"""
+
 MARK_SENT = f"""
 UPDATE actions
 SET status = 'SENT', receipt_id = %(receipt_id)s, sent_at = {NOW_MS}, failure_reason = NULL
-WHERE id = %(id)s AND attempt_n = %(attempt_n)s AND status = 'SENDING'
+{CLAIMED}
 """
 
-MARK_NOT_SENT = """
+# Rate limited before the request could go out: back to PENDING without using an attempt.
+MARK_WAITED = f"""
 UPDATE actions
-SET status = %(status)s, failure_reason = %(reason)s
-WHERE id = %(id)s AND attempt_n = %(attempt_n)s AND status = 'SENDING'
+SET status = 'PENDING'
+{CLAIMED}
+"""
+
+# A failed attempt: count it, and give up once MAX_ATTEMPTS are used. The right-hand sides
+# all read the row as it was before this UPDATE.
+MARK_FAILED_ATTEMPT = f"""
+UPDATE actions
+SET attempt_n = attempt_n + 1,
+    status = CASE WHEN attempt_n + 1 >= %(max_attempts)s
+                  THEN 'FAILED'::action_status ELSE 'PENDING'::action_status END,
+    failure_reason = %(reason)s
+{CLAIMED}
+"""
+
+# A SENDING row whose pick is older than this belongs to a worker that died before updating.
+STALE_AFTER_MS = 10_000
+WORKER_FAILED_REASON = "Worker failed to update"
+
+# Counts the dead worker's pick as a failed attempt. It may have reached the provider, which is
+# safe: with attempt_n above 0, send checks /sent before sending again. SKIP LOCKED passes over
+# rows another transaction is updating right now.
+RELEASE_STALE = f"""
+UPDATE actions
+SET attempt_n = attempt_n + 1,
+    status = CASE WHEN attempt_n + 1 >= %(max_attempts)s
+                  THEN 'FAILED'::action_status ELSE 'PENDING'::action_status END,
+    failure_reason = %(reason)s
+WHERE id IN (
+    SELECT id FROM actions
+    WHERE status = 'SENDING' AND attempt_started_at < {NOW_MS} - %(stale_after_ms)s
+    FOR UPDATE SKIP LOCKED
+)
 """
 
 # Receipt ids are unique, so a page read twice inserts nothing new. Receipts for action ids
@@ -107,21 +144,41 @@ class WorkerDB:
     async def update(
         self, action: Action, outcome: Sent | NotSent, transaction: Transaction | None = None
     ) -> bool:
-        """Record the outcome of the attempt in `action`.
+        """Record the outcome of the pick in `action`.
 
-        A failure goes back to PENDING, or to FAILED once MAX_ATTEMPTS attempts are used.
-        Returns False when the row no longer carries this attempt.
+        Sent: SENT with its receipt. NotSent with a wait: back to PENDING, attempt_n unchanged,
+        since the request never went out. Any other NotSent: attempt_n goes up by one, and the
+        row goes back to PENDING, or to FAILED once MAX_ATTEMPTS attempts are used.
+        Returns False when the row is no longer held by this pick.
         """
-        params: dict[str, object] = {"id": action.id, "attempt_n": action.attempt_n}
+        params: dict[str, object] = {
+            "id": action.id,
+            "attempt_started_at": action.attempt_started_at,
+        }
         if isinstance(outcome, Sent):
             query, params["receipt_id"] = MARK_SENT, outcome.receipt_id
+        elif outcome.retry_after is not None:
+            query = MARK_WAITED
         else:
-            query = MARK_NOT_SENT
-            params["status"] = "FAILED" if action.attempt_n >= MAX_ATTEMPTS else "PENDING"
-            params["reason"] = outcome.reason
+            query, params["reason"] = MARK_FAILED_ATTEMPT, outcome.reason
+            params["max_attempts"] = MAX_ATTEMPTS
         async with self._use(transaction) as conn:
             cur = await conn.execute(query, params)
             return cur.rowcount == 1
+
+    async def release_stale(self, transaction: Transaction | None = None) -> int:
+        """Release SENDING rows picked more than STALE_AFTER_MS ago, and return how many.
+
+        Each counts as a failed attempt: back to PENDING, or FAILED once MAX_ATTEMPTS are used.
+        """
+        params = {
+            "max_attempts": MAX_ATTEMPTS,
+            "reason": WORKER_FAILED_REASON,
+            "stale_after_ms": STALE_AFTER_MS,
+        }
+        async with self._use(transaction) as conn:
+            cur = await conn.execute(RELEASE_STALE, params)
+            return cur.rowcount
 
     async def insert_receipts(
         self, receipts: list[Receipt], transaction: Transaction | None = None
