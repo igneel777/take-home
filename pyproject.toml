@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Worker that drains scheduled outreach actions through an unreliable provider"
 readme = "README.md"
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = [
+    "psycopg[binary,pool]>=3.3.6",
+    "pydantic>=2.14.1",
+]
 
 [dependency-groups]
 dev = [
