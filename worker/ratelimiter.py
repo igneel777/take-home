@@ -43,3 +43,15 @@ class RateLimiter:
                 wait = math.ceil((1.0 - tokens) / RATE_LIMIT_RPS)
             await self.db.save_bucket(tokens, now, conn)
             return wait
+
+    async def block(self, retry_after: float | None) -> None:
+        """Stop every worker taking tokens until the provider's Retry-After window closes.
+
+        Call it on any 429. The provider's window is global, so one worker's 429 has to hold
+        back the others too, or their requests land inside the window.
+
+        Args:
+            retry_after: The response's Retry-After in seconds; 1 when it had none.
+        """
+        seconds = retry_after if retry_after is not None else 1.0
+        await self.db.save_blocked_until(math.ceil(seconds * 1000))

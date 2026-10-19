@@ -88,7 +88,10 @@ class ProviderClient:
             return Sent(receipt_id=response.json()["receipt_id"])
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
-            return NotSent(reason=f"http {status}", retry_after=_retry_after(e.response))
+            retry_after = _retry_after(e.response)
+            if status == 429:
+                await self.rate_limiter.block(retry_after)
+            return NotSent(reason=f"http {status}", retry_after=retry_after)
         except httpx.TimeoutException as e:
             return NotSent(reason=f"timeout: {type(e).__name__}")
         except httpx.HTTPError as e:
@@ -130,6 +133,8 @@ class ProviderClient:
                 status = e.response.status_code
                 retry_after = _retry_after(e.response)
                 print(f"sync_one_page failed at cursor {cursor}: http {status}")
+                if status == 429:
+                    await self.rate_limiter.block(retry_after)
                 if status == 429 or retry_after is not None:
                     return SyncResult(done=False, wait=max(1, math.ceil(retry_after or 0)))
                 return SyncResult(done=False)

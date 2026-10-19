@@ -19,6 +19,12 @@ UPDATE provider_stats
 SET tokens = %(tokens)s, last_added_at = %(now)s
 """
 
+# GREATEST keeps a longer window another worker already saved.
+SAVE_BLOCKED_UNTIL = f"""
+UPDATE provider_stats
+SET blocked_until = GREATEST(blocked_until, {NOW_MS} + %(wait_ms)s)
+"""
+
 Transaction = AsyncConnection[DictRow]
 
 
@@ -95,3 +101,15 @@ class RateLimiterDB:
         """
         async with self._use(transaction) as conn:
             await conn.execute(SAVE_BUCKET, {"tokens": tokens, "now": now})
+
+    async def save_blocked_until(
+        self, wait_ms: int, transaction: Transaction | None = None
+    ) -> None:
+        """Push provider_stats.blocked_until to at least `wait_ms` from now, never back.
+
+        Args:
+            wait_ms: Milliseconds from the database's current time to block for.
+            transaction: The caller's transaction, if any; see the class docstring.
+        """
+        async with self._use(transaction) as conn:
+            await conn.execute(SAVE_BLOCKED_UNTIL, {"wait_ms": wait_ms})
