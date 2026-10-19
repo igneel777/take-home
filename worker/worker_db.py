@@ -57,7 +57,8 @@ SET attempt_n = attempt_n + 1,
 
 # Counts the dead worker's pick as a failed attempt. It may have reached the provider, which is
 # safe: with attempt_n above 0, send checks /sent before sending again. SKIP LOCKED passes over
-# rows another transaction is updating right now.
+# rows another transaction is updating right now. The cutoff is a subquery so it is computed
+# once, letting the index search on attempt_started_at; clock_timestamp() alone cannot.
 RELEASE_STALE = f"""
 UPDATE actions
 SET attempt_n = attempt_n + 1,
@@ -66,7 +67,7 @@ SET attempt_n = attempt_n + 1,
     failure_reason = %(reason)s
 WHERE id IN (
     SELECT id FROM actions
-    WHERE status = 'SENDING' AND attempt_started_at < {NOW_MS} - %(stale_after_ms)s
+    WHERE status = 'SENDING' AND attempt_started_at < (SELECT {NOW_MS} - %(stale_after_ms)s)
     FOR UPDATE SKIP LOCKED
 )
 """

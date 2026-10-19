@@ -54,8 +54,9 @@ CREATE TABLE provider_stats (
 CREATE_INDEXES = """
 -- A unique index on a constant caps provider_stats at a single row.
 CREATE UNIQUE INDEX provider_stats_single_row_idx ON provider_stats ((true));
-CREATE INDEX actions_claimable_idx ON actions (status, attempt_started_at)
-    WHERE status IN ('PENDING', 'SENDING');
+-- pick_one reads the oldest PENDING row; release_stale reads SENDING rows picked too long ago.
+CREATE INDEX actions_status_created_at_idx ON actions (status, created_at);
+CREATE INDEX actions_status_attempt_started_at_idx ON actions (status, attempt_started_at);
 CREATE INDEX receipts_action_id_idx ON receipts (action_id);
 """
 
