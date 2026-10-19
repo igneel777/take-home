@@ -7,6 +7,8 @@ from psycopg.conninfo import make_conninfo
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from config import DB_ROLE_CONFIG
+
 DEFAULT_DATABASE_URL = "postgresql://dispatch:dispatch@127.0.0.1:5432/dispatch"
 
 # SQL expression for the current time in epoch milliseconds; clock_timestamp() so it is not
@@ -14,17 +16,14 @@ DEFAULT_DATABASE_URL = "postgresql://dispatch:dispatch@127.0.0.1:5432/dispatch"
 NOW_MS = "(extract(epoch FROM clock_timestamp()) * 1000)::bigint"
 
 
-def database_url(role: str = "worker") -> str:
-    """DATABASE_URL with its user swapped for `role`.
-
-    The password is kept, so `role` must share the URL user's password.
-    """
+def database_url(role: str) -> str:
+    """DATABASE_URL with its user and password swapped for `role`'s, from DB_ROLE_CONFIG."""
     url = os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
-    return make_conninfo(url, user=role)
+    return make_conninfo(url, user=role, password=DB_ROLE_CONFIG[role]["password"])
 
 
 class DBConnector:
-    def __init__(self, role: str = "worker", min_size: int = 2, max_size: int = 10) -> None:
+    def __init__(self, role: str, min_size: int = 2, max_size: int = 10) -> None:
         self.pool = AsyncConnectionPool(
             conninfo=database_url(role),
             min_size=min_size,

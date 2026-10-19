@@ -5,6 +5,7 @@ from uuid import UUID
 from psycopg import AsyncConnection, errors
 from psycopg.rows import DictRow
 
+from config import STALE_AFTER_MS, SYNC_LOCK_KEY, WORKER_FAILED_REASON
 from shared.db_connector import NOW_MS, DBConnector
 from shared.models import Action, NotSent, Receipt, Sent
 
@@ -54,10 +55,6 @@ SET attempt_n = attempt_n + 1,
 {CLAIMED}
 """
 
-# A SENDING row whose pick is older than this belongs to a worker that died before updating.
-STALE_AFTER_MS = 10_000
-WORKER_FAILED_REASON = "Worker failed to update"
-
 # Counts the dead worker's pick as a failed attempt. It may have reached the provider, which is
 # safe: with attempt_n above 0, send checks /sent before sending again. SKIP LOCKED passes over
 # rows another transaction is updating right now.
@@ -98,9 +95,6 @@ SAVE_SENT_CURSOR = """
 UPDATE provider_stats
 SET sent_cursor = GREATEST(sent_cursor, %(cursor)s)
 """
-
-# Key of the advisory lock that lets one worker at a time sync /sent.
-SYNC_LOCK_KEY = 1
 
 Transaction = AsyncConnection[DictRow]
 

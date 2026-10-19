@@ -3,13 +3,10 @@ import os
 
 import httpx
 
+from config import DEFAULT_PROVIDER_URL, DEFAULT_TIMEOUT_SECONDS, SENT_PAGE_SIZE
 from shared.models import Action, NotSent, Outcome, Receipt, Sent, SyncResult
 from worker.ratelimiter import RateLimiter
 from worker.worker_db import WorkerDB
-
-DEFAULT_PROVIDER_URL = "http://127.0.0.1:8080"
-DEFAULT_TIMEOUT_SECONDS = 5.0
-SENT_PAGE_SIZE = 100  # the most /sent returns per page
 
 
 def provider_url() -> str:

@@ -5,19 +5,11 @@ from pathlib import Path
 
 from psycopg import AsyncConnection, sql
 
-from config import RATE_LIMIT_TOKENS
+from config import DB_ROLE_CONFIG, RATE_LIMIT_TOKENS
 from shared.db_connector import NOW_MS, DBConnector
 
 ACTIONS_JSON = Path(__file__).resolve().parent / "actions.json"
 
-# database_url keeps the URL's password when it swaps the user, so every role shares it.
-ROLE_PASSWORD = "dispatch"
-ROLE_TIMEOUT = "5s"
-# Each role and the table privileges it is granted.
-ROLES = {
-    "worker": "GRANT SELECT, INSERT, UPDATE, DELETE ON actions, receipts, provider_stats TO {}",
-    "ratelimiter": "GRANT SELECT, UPDATE ON provider_stats TO {}",
-}
 INSERT_BATCH_SIZE = 100
 
 DROP_TABLES = """
@@ -68,7 +60,7 @@ CREATE INDEX receipts_action_id_idx ON receipts (action_id);
 """
 
 
-async def create_role(conn: AsyncConnection, name: str, grants: str) -> None:
+async def create_role(conn: AsyncConnection, name: str, role_config: dict) -> None:
     role = sql.Identifier(name)
     cur = await conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (name,))
     if await cur.fetchone() is not None:
@@ -76,18 +68,16 @@ async def create_role(conn: AsyncConnection, name: str, grants: str) -> None:
         await conn.execute(sql.SQL("REASSIGN OWNED BY {} TO CURRENT_USER").format(role))
         await conn.execute(sql.SQL("DROP OWNED BY {}").format(role))
         await conn.execute(sql.SQL("DROP ROLE {}").format(role))
-    await conn.execute(
-        sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(role, sql.Literal(ROLE_PASSWORD))
-    )
-    # Postgres 16 has no transaction_timeout (added in 17); these two bound a transaction instead.
-    for setting in ("lock_timeout", "statement_timeout", "idle_in_transaction_session_timeout"):
+    password = sql.Literal(role_config["password"])
+    await conn.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(role, password))
+    for setting, value in role_config["timeouts"].items():
         await conn.execute(
             sql.SQL("ALTER ROLE {} SET {} = {}").format(
-                role, sql.Identifier(setting), sql.Literal(ROLE_TIMEOUT)
+                role, sql.Identifier(setting), sql.Literal(value)
             )
         )
     await conn.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(role))
-    await conn.execute(sql.SQL(grants).format(role))
+    await conn.execute(sql.SQL(role_config["grants"]).format(role))
 
 
 async def main() -> None:
@@ -106,8 +96,9 @@ async def main() -> None:
                         [(a["id"], a["recipient"], a["body"]) for a in batch],
                     )
             await conn.execute("INSERT INTO provider_stats DEFAULT VALUES")
-            for name, grants in ROLES.items():
-                await create_role(conn, name, grants)
+            for name, role_config in DB_ROLE_CONFIG.items():
+                if role_config["grants"] is not None:
+                    await create_role(conn, name, role_config)
     finally:
         await db.close()
     print(f"seeded {len(actions)} actions")
