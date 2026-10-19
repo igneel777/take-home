@@ -10,17 +10,23 @@ from worker.worker_db import WorkerDB
 
 
 def provider_url() -> str:
+    """Return PROVIDER_URL or DEFAULT_PROVIDER_URL, with no trailing slash."""
     return os.environ.get("PROVIDER_URL", DEFAULT_PROVIDER_URL).rstrip("/")
 
 
 class ProviderClient:
     """HTTP client for the provider, on a pool of one keep-alive connection.
 
-    Every send takes a token from the shared RateLimiter first. Call open() before sending.
-    `worker_db` is used to sync /sent into receipts; its owner opens and closes it.
+    Every request takes a token from the shared RateLimiter first.
     """
 
     def __init__(self, worker_db: WorkerDB, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
+        """Create the client; call open() before sending.
+
+        Args:
+            worker_db: Used to sync /sent into receipts. Its owner opens and closes it.
+            timeout: Seconds to wait to connect, read, or write before giving up.
+        """
         self.base_url = provider_url()
         self.worker_db = worker_db
         self.client = httpx.AsyncClient(
@@ -31,6 +37,7 @@ class ProviderClient:
         self.rate_limiter = RateLimiter()
 
     async def open(self) -> None:
+        """Open the rate limiter's connection pool."""
         await self.rate_limiter.open()
 
     async def send(self, action: Action) -> Outcome:
@@ -38,8 +45,14 @@ class ProviderClient:
 
         attempt_n counts failed attempts, so at 0 nothing can have gone out and it is sent
         straight away. Otherwise /sent is synced to the end first, and an existing receipt is
-        returned as Sent. Being rate limited, by our bucket or by a 429 on /send or /sent,
-        returns NotSent with the seconds to wait.
+        returned as Sent.
+
+        Args:
+            action: The action as pick_one returned it.
+
+        Returns:
+            Sent with the receipt id, or NotSent with the reason. When rate limited, by our
+            bucket or by a 429 on /send or /sent, NotSent carries the seconds to wait.
         """
         if action.attempt_n > 0:
             while not (result := await self.sync_one_page()).done:
@@ -51,6 +64,15 @@ class ProviderClient:
         return await self._post(action)
 
     async def _post(self, action: Action) -> Outcome:
+        """Take a token and POST `action` to /send.
+
+        Args:
+            action: The action to send.
+
+        Returns:
+            Sent with the provider's receipt id, or NotSent with the reason. retry_after is set
+            when our bucket was empty, or from the Retry-After header of an error response.
+        """
         payload = {
             "action_id": str(action.id),
             "recipient": action.recipient,
@@ -75,11 +97,17 @@ class ProviderClient:
             return NotSent(reason=f"bad response body: {type(e).__name__}")
 
     async def sync_one_page(self) -> SyncResult:
-        """Copy the next page of /sent, from provider_stats.sent_cursor, into receipts.
+        """Copy the next page of /sent into receipts.
 
-        Only the worker holding the sync advisory lock reads a page. Reading the cursor, taking
-        a token, and saving the page are separate transactions, so no lock is held across the
-        HTTP call; the page's receipts and the new cursor commit together.
+        The page starts at provider_stats.sent_cursor. Only the worker holding the sync advisory
+        lock reads a page. Reading the cursor, taking a token, and saving the page are separate
+        transactions, so no lock is held across the HTTP call; the page's receipts and the new
+        cursor commit together.
+
+        Returns:
+            done is True when the page was short, so receipts caught up with /sent. wait is set
+            when rate limited, by our bucket or by a 429. It is 0 after any other failure, and
+            when the lock wait ran out on another worker's page.
         """
         worker_db = self.worker_db
         async with worker_db.sync_lock() as conn:
@@ -114,6 +142,7 @@ class ProviderClient:
             return SyncResult(done=len(receipts) < SENT_PAGE_SIZE)
 
     async def close(self) -> None:
+        """Close the HTTP client and the rate limiter's connection pool."""
         await self.client.aclose()
         await self.rate_limiter.close()
 

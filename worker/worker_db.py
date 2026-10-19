@@ -100,23 +100,39 @@ Transaction = AsyncConnection[DictRow]
 
 
 class WorkerDB:
-    """Database operations for the worker, on a connection pool as the worker role.
+    """Database operations for the worker.
 
-    Each method takes an optional `transaction`. When given, the method runs inside it and
-    leaves committing to the caller; otherwise it runs in its own transaction and commits.
+    They run on a connection pool as the worker role. Each method takes an optional `transaction`.
+    When given, the method runs inside it and leaves committing to the caller; otherwise it runs in
+    its own transaction and commits.
     """
 
     def __init__(self, min_size: int = 2, max_size: int = 10) -> None:
+        """Create the pool, closed; call open() before use.
+
+        Args:
+            min_size: Connections the pool keeps open.
+            max_size: Most connections the pool opens.
+        """
         self.db_connector = DBConnector(role="worker", min_size=min_size, max_size=max_size)
 
     async def open(self) -> None:
+        """Open the connection pool."""
         await self.db_connector.open()
 
     async def close(self) -> None:
+        """Close the connection pool."""
         await self.db_connector.close()
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[Transaction]:
+        """Lend a pooled connection for one transaction.
+
+        The transaction commits when the block exits cleanly and rolls back on an exception.
+
+        Yields:
+            The connection.
+        """
         async with self.db_connector.transaction() as conn:
             yield conn
 
@@ -129,7 +145,14 @@ class WorkerDB:
                 yield conn
 
     async def pick_one(self, transaction: Transaction | None = None) -> Action | None:
-        """Claim the oldest PENDING action as SENDING and return it."""
+        """Claim the oldest PENDING action as SENDING.
+
+        Args:
+            transaction: The caller's transaction, if any; see the class docstring.
+
+        Returns:
+            The claimed action, or None when no PENDING action is free to claim.
+        """
         async with self._use(transaction) as conn:
             cur = await conn.execute(PICK_ONE)
             row = await cur.fetchone()
@@ -143,7 +166,14 @@ class WorkerDB:
         Sent: SENT with its receipt. NotSent with a wait: back to PENDING, attempt_n unchanged,
         since the request never went out. Any other NotSent: attempt_n goes up by one, and the
         row goes back to PENDING, or to FAILED once MAX_ATTEMPTS attempts are used.
-        Returns False when the row is no longer held by this pick.
+
+        Args:
+            action: The action as pick_one returned it.
+            outcome: What sending it gave.
+            transaction: The caller's transaction, if any; see the class docstring.
+
+        Returns:
+            True when the row was updated, False when it is no longer held by this pick.
         """
         params: dict[str, object] = {
             "id": action.id,
@@ -161,9 +191,15 @@ class WorkerDB:
             return cur.rowcount == 1
 
     async def release_stale(self, transaction: Transaction | None = None) -> int:
-        """Release SENDING rows picked more than STALE_AFTER_MS ago, and return how many.
+        """Release SENDING rows picked more than STALE_AFTER_MS ago.
 
         Each counts as a failed attempt: back to PENDING, or FAILED once MAX_ATTEMPTS are used.
+
+        Args:
+            transaction: The caller's transaction, if any; see the class docstring.
+
+        Returns:
+            How many rows were released.
         """
         params = {
             "max_attempts": MAX_ATTEMPTS,
@@ -177,6 +213,12 @@ class WorkerDB:
     async def insert_receipts(
         self, receipts: list[Receipt], transaction: Transaction | None = None
     ) -> None:
+        """Store receipts, skipping known ones and ones for unknown actions.
+
+        Args:
+            receipts: Receipts from one page of /sent.
+            transaction: The caller's transaction, if any; see the class docstring.
+        """
         if not receipts:
             return
         async with self._use(transaction) as conn, conn.cursor() as cur:
@@ -185,30 +227,55 @@ class WorkerDB:
     async def find_receipt(
         self, action_id: UUID, transaction: Transaction | None = None
     ) -> Receipt | None:
+        """Find an action's receipt, the earliest if it was sent more than once.
+
+        Args:
+            action_id: The action's id.
+            transaction: The caller's transaction, if any; see the class docstring.
+
+        Returns:
+            The receipt, or None when receipts has none for `action_id`.
+        """
         async with self._use(transaction) as conn:
             cur = await conn.execute(FIND_RECEIPT, {"action_id": action_id})
             row = await cur.fetchone()
         return Receipt.model_validate(row) if row is not None else None
 
     async def get_sent_cursor(self, transaction: Transaction | None = None) -> int:
+        """Read how far /sent has been synced into receipts.
+
+        Args:
+            transaction: The caller's transaction, if any; see the class docstring.
+
+        Returns:
+            provider_stats.sent_cursor, the `since` to ask /sent for next.
+        """
         async with self._use(transaction) as conn:
             cur = await conn.execute(GET_SENT_CURSOR)
             row = await cur.fetchone()
         return row["sent_cursor"]
 
     async def save_sent_cursor(self, cursor: int, transaction: Transaction | None = None) -> None:
+        """Move provider_stats.sent_cursor forward to `cursor`, never back.
+
+        Args:
+            cursor: The `next` of the page just saved.
+            transaction: The caller's transaction, if any; see the class docstring.
+        """
         async with self._use(transaction) as conn:
             await conn.execute(SAVE_SENT_CURSOR, {"cursor": cursor})
 
     @asynccontextmanager
     async def sync_lock(self) -> AsyncIterator[Transaction | None]:
-        """Hold the session-level advisory lock for syncing /sent, waiting for it if needed.
+        """Hold the advisory lock for syncing /sent, waiting for it if needed.
 
-        Yields the connection holding the lock, or None when the wait ran out (the worker
-        role's 5s lock_timeout and statement_timeout). The connection is in autocommit so no
-        transaction stays open across HTTP calls; group statements on it with
-        `conn.transaction()`. If the process dies, Postgres releases the lock when the
-        connection closes.
+        The lock is session-level. The connection is in autocommit so no transaction stays
+        open across HTTP calls; group statements on it with `conn.transaction()`. If the
+        process dies, Postgres releases the lock when the connection closes.
+
+        Yields:
+            The connection holding the lock, or None when the wait ran out at the worker role's
+            lock_timeout or statement_timeout, set in DB_ROLE_CONFIG.
         """
         async with self.db_connector.pool.connection() as conn:
             await conn.set_autocommit(True)

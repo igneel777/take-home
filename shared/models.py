@@ -58,8 +58,15 @@ class Sent(BaseModel):
 
 
 class NotSent(BaseModel):
-    """No receipt came back. After a timeout or a dropped connection the provider may still
-    have sent it, so this is not proof that nothing went out."""
+    """No receipt came back for a send.
+
+    After a timeout or a dropped connection the provider may still have sent it, so this is
+    not proof that nothing went out.
+
+    Attributes:
+        reason: Why no receipt came back.
+        retry_after: Seconds to wait before trying again when rate limited, else None.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -73,8 +80,9 @@ Outcome = Sent | NotSent
 class SyncResult(BaseModel):
     """What one sync_one_page call did.
 
-    done: the page was short, so receipts held everything in /sent when it was read.
-    wait: whole seconds to wait before the next call; 0 means call again at once.
+    Attributes:
+        done: The page was short, so receipts held everything in /sent when it was read.
+        wait: Whole seconds to wait before the next call; 0 means call again at once.
     """
 
     model_config = ConfigDict(frozen=True)

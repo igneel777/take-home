@@ -23,23 +23,39 @@ Transaction = AsyncConnection[DictRow]
 
 
 class RateLimiterDB:
-    """Database operations for the rate limiter, on a connection pool as the ratelimiter role.
+    """Database operations for the rate limiter.
 
-    Each method takes an optional `transaction`. When given, the method runs inside it and
-    leaves committing to the caller; otherwise it runs in its own transaction and commits.
+    They run on a connection pool as the ratelimiter role. Each method takes an optional
+    `transaction`. When given, the method runs inside it and leaves committing to the caller;
+    otherwise it runs in its own transaction and commits.
     """
 
     def __init__(self, min_size: int = 1, max_size: int = 4) -> None:
+        """Create the pool, closed; call open() before use.
+
+        Args:
+            min_size: Connections the pool keeps open.
+            max_size: Most connections the pool opens.
+        """
         self.db_connector = DBConnector(role="ratelimiter", min_size=min_size, max_size=max_size)
 
     async def open(self) -> None:
+        """Open the connection pool."""
         await self.db_connector.open()
 
     async def close(self) -> None:
+        """Close the connection pool."""
         await self.db_connector.close()
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[Transaction]:
+        """Lend a pooled connection for one transaction.
+
+        The transaction commits when the block exits cleanly and rolls back on an exception.
+
+        Yields:
+            The connection.
+        """
         async with self.db_connector.transaction() as conn:
             yield conn
 
@@ -52,9 +68,15 @@ class RateLimiterDB:
                 yield conn
 
     async def lock_stats(self, transaction: Transaction | None = None) -> tuple[ProviderStats, int]:
-        """Lock the provider_stats row and return it with the database's current epoch ms.
+        """Lock and read the provider_stats row, with the database's time.
 
         Only useful inside a caller's `transaction`; on its own the lock ends at once.
+
+        Args:
+            transaction: The caller's transaction, which holds the lock until it ends.
+
+        Returns:
+            The row, and the database's current time in epoch ms.
         """
         async with self._use(transaction) as conn:
             cur = await conn.execute(LOCK_STATS)
@@ -64,6 +86,12 @@ class RateLimiterDB:
     async def save_bucket(
         self, tokens: float, now: int, transaction: Transaction | None = None
     ) -> None:
-        """Store the bucket's tokens as of `now`."""
+        """Store the bucket's tokens as of `now`.
+
+        Args:
+            tokens: Tokens left in the bucket.
+            now: Epoch ms the tokens were counted at; saved as last_added_at.
+            transaction: The caller's transaction, if any; see the class docstring.
+        """
         async with self._use(transaction) as conn:
             await conn.execute(SAVE_BUCKET, {"tokens": tokens, "now": now})

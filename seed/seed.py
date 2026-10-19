@@ -61,6 +61,14 @@ CREATE INDEX receipts_action_id_idx ON receipts (action_id);
 
 
 async def create_role(conn: AsyncConnection, name: str, role_config: dict) -> None:
+    """Create `name` as a login role, dropping it first if it already exists.
+
+    Args:
+        conn: A connection as the owner role, to run the statements on.
+        name: The role's name.
+        role_config: The role's DB_ROLE_CONFIG entry. Its grants is a GRANT statement with {}
+            in place of the role.
+    """
     role = sql.Identifier(name)
     cur = await conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (name,))
     if await cur.fetchone() is not None:
@@ -81,6 +89,11 @@ async def create_role(conn: AsyncConnection, name: str, role_config: dict) -> No
 
 
 async def main() -> None:
+    """Recreate the schema, load the actions, and create the roles.
+
+    Loads seed/actions.json, and creates every DB_ROLE_CONFIG role that has grants. It all runs in
+    one transaction as dispatch, so a seed that fails changes nothing.
+    """
     actions = json.loads(ACTIONS_JSON.read_text(encoding="utf-8"))
     db = DBConnector(role="dispatch", min_size=1, max_size=1)
     await db.open()

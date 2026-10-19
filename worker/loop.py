@@ -8,6 +8,12 @@ IDLE_SLEEP_SECONDS = 5
 
 
 async def run() -> None:
+    """Send actions one at a time until the process is stopped.
+
+    Each pick is sent and its outcome saved, then rows that dead workers left in SENDING are
+    released. Sleeps IDLE_SLEEP_SECONDS when nothing is PENDING, and retry_after when rate
+    limited.
+    """
     worker_db = WorkerDB()
     provider = ProviderClient(worker_db)
     await worker_db.open()
